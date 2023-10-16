@@ -42,6 +42,7 @@ namespace GraphQLLoginConsoleApp
             var response = await client.SendQueryAsync<LoginResponse>(request);
             LoginData loginData = response.Data.login;
 
+            Console.WriteLine($"Access Token: {loginData.access_token}");
         }
     }
 }
