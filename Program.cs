@@ -3,8 +3,10 @@ using GraphQL.Client.Http;
 using GraphQL.Client.Serializer.Newtonsoft;
 using GraphQLLoginConsoleApp.Models;
 using Microsoft.IdentityModel.Tokens;
+using Newtonsoft.Json;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Cryptography;
+using System.Text;
 
 namespace GraphQLLoginConsoleApp
 {
@@ -12,78 +14,54 @@ namespace GraphQLLoginConsoleApp
     {
 
         private const string Endpoint = "https://auth.qualidrone.com";
+        private static readonly HttpClient HttpClient = new HttpClient();
+        private static readonly GraphQLHttpClient GraphQLClient = new GraphQLHttpClient(Endpoint + "/graphql", new NewtonsoftJsonSerializer());
 
-        private const string publicKeyPEM = @"
-            -----BEGIN PUBLIC KEY-----
-            2TH2E8iXb75LsLludNuT_eiUSE5a2l7gGOKzUBMgcbmLJbZCrDp2ie6zjnz5M204hSzemKS6lJ55TThil_cx2KebCjDegzch839HYEz8ul_bnq3S5jYAbTJ8Xgv6792e88vw-b42i3Zqexz6RCFB63k8IUwnJXY9FG0ulNsdLo2ZuwbMs77olMGMEkpuh7rpdJ1RAAyJVyFogrzQCghQsLeUzeksQBy-w_RJ0B5478fsIJ6Xgzs2EBQxf3Hnyr-eUDVaejZ4ijir6_wLlDX7-bU1e_WAuMxKUsgHk8ekCZraxJlaBCcs-Gtl39B_9T-esrRFxGiMrwToJ2Zcr3BSXw
-            -----END PUBLIC KEY-----
+        private const string ClientId = "6c702395-df28-4fc2-ad55-f344bbaa27e9";
+        private const string PublicKeyPEM = @"
+            -----BEGIN RSA PUBLIC KEY-----
+            MIIBCgKCAQEA2TH2E8iXb75LsLludNuT/eiUSE5a2l7gGOKzUBMgcbmLJbZCrDp2
+            ie6zjnz5M204hSzemKS6lJ55TThil/cx2KebCjDegzch839HYEz8ul/bnq3S5jYA
+            bTJ8Xgv6792e88vw+b42i3Zqexz6RCFB63k8IUwnJXY9FG0ulNsdLo2ZuwbMs77o
+            lMGMEkpuh7rpdJ1RAAyJVyFogrzQCghQsLeUzeksQBy+w/RJ0B5478fsIJ6Xgzs2
+            EBQxf3Hnyr+eUDVaejZ4ijir6/wLlDX7+bU1e/WAuMxKUsgHk8ekCZraxJlaBCcs
+            +Gtl39B/9T+esrRFxGiMrwToJ2Zcr3BSXwIDAQAB
+            -----END RSA PUBLIC KEY-----
             ";
-
-        private const string e = "AQAB";
-        private const string n = "2TH2E8iXb75LsLludNuT_eiUSE5a2l7gGOKzUBMgcbmLJbZCrDp2ie6zjnz5M204hSzemKS6lJ55TThil_cx2KebCjDegzch839HYEz8ul_bnq3S5jYAbTJ8Xgv6792e88vw-b42i3Zqexz6RCFB63k8IUwnJXY9FG0ulNsdLo2ZuwbMs77olMGMEkpuh7rpdJ1RAAyJVyFogrzQCghQsLeUzeksQBy-w_RJ0B5478fsIJ6Xgzs2EBQxf3Hnyr-eUDVaejZ4ijir6_wLlDX7-bU1e_WAuMxKUsgHk8ekCZraxJlaBCcs-Gtl39B_9T-esrRFxGiMrwToJ2Zcr3BSXw";
 
         static async Task Main(string[] args)
         {
-            using var client = new GraphQLHttpClient(Endpoint + "/graphql", new NewtonsoftJsonSerializer());
 
-            GraphQLResponse<LoginResponse> response = await Login(client);
-            LoginData loginData = response.Data.login;
+            LoginData? loginData = await Login("ppk@qualidrone.com", "dU?Thq9N,B}7BM7");
+            if (loginData == null)
+            {
+                Console.WriteLine("Login failed");
+                return;
+            }
 
             Console.WriteLine($"Access Token: {loginData.access_token}");
+            Console.WriteLine($"Refresh Token: {loginData.refresh_token}");
 
-            // The provided exponent in base64url encoding
-            var rsa = RSA.Create();
-            rsa.ImportParameters(
-                new RSAParameters
-                {
-                    Modulus = Base64UrlDecode(n),
-                    Exponent = Base64UrlDecode(e)
-                });
+            TimeSpan timeLeft = GetTokenTimeLeft(loginData.access_token);
+            Console.WriteLine($"Access Token time left: {timeLeft}");
 
-            var rsaSecurityKey = new RsaSecurityKey(rsa);
-
-            var tokenHandler = new JwtSecurityTokenHandler();
-            var validationParameters = new TokenValidationParameters
+            loginData = await RefreshToken(loginData.refresh_token);
+            if (loginData == null)
             {
-                ValidIssuer = "https://auth.qualidrone.com",
-                IssuerSigningKey = rsaSecurityKey,
-                ValidateIssuer = true,
-                ValidateAudience = false,
-                ValidateLifetime = true,
-                ClockSkew = TimeSpan.Zero
-            };
-
-            try
-            {
-                var claimsPrincipal = tokenHandler.ValidateToken(loginData.access_token, validationParameters, out SecurityToken validatedToken);
-                JwtSecurityToken? jwtSecurityToken = validatedToken as JwtSecurityToken;
-                if (jwtSecurityToken == null)
-                {
-                    Console.WriteLine("Token validation failed");
-                    return;
-                }
-                else
-                {
-                    DateTime expirationTime = jwtSecurityToken.ValidTo;
-                    TimeSpan timeLeft = expirationTime - DateTime.UtcNow;
-                    Console.WriteLine($"Token will expire at {expirationTime}. Time left: {timeLeft}");
-                }
-
+                Console.WriteLine("Refresh token failed");
+                return;
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Token validation failed: {ex.Message}");
-            }
+            Console.WriteLine($"New Login Data access_token: {loginData.access_token}");
         }
 
-        private static async Task<GraphQLResponse<LoginResponse>> Login(GraphQLHttpClient client)
+        private static async Task<LoginData?> Login(string email, string password)
         {
-            var mutation = @"
-                mutation {
+            string mutation = @"
+                mutation Login($email: String!, $password: String!) {
                     login(
                         params: {
-                            email: ""ppk@qualidrone.com""
-                            password: ""dU?Thq9N,B}7BM7""
+                            email: $email
+                            password: $password
                             scope: ""offline_access""
                         }
                     ) {
@@ -99,21 +77,94 @@ namespace GraphQLLoginConsoleApp
                     }
                 }";
 
-            var request = new GraphQLHttpRequest
+
+            GraphQLHttpRequest request = new GraphQLHttpRequest
             {
-                Query = mutation
+                Query = mutation,
+                Variables = new
+                {
+                    email,
+                    password
+                }
             };
 
-            var response = await client.SendQueryAsync<LoginResponse>(request);
-            return response;
+            GraphQLResponse<LoginResponse> response = await GraphQLClient.SendQueryAsync<LoginResponse>(request);
+            if (response.Errors != null)
+            {
+                return null;
+            }
+            LoginData? loginData = response.Data.login;
+            return loginData;
         }
 
-        public static byte[] Base64UrlDecode(string base64Url)
+        private static TimeSpan GetTokenTimeLeft(string accessToken)
         {
-            string padded = base64Url.Length % 4 == 0
-                ? base64Url : base64Url + "====".Substring(base64Url.Length % 4);
-            string base64 = padded.Replace("_", "/").Replace("-", "+");
-            return Convert.FromBase64String(base64);
+            RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
+            rsa.ImportFromPem(PublicKeyPEM);
+            RsaSecurityKey securityKey = new RsaSecurityKey(rsa);
+
+            JwtSecurityTokenHandler tokenHandler = new JwtSecurityTokenHandler();
+            TokenValidationParameters validationParameters = new TokenValidationParameters
+            {
+                ValidIssuer = Endpoint,
+                IssuerSigningKey = securityKey,
+                ValidateIssuer = true,
+                ValidateAudience = false,
+                ValidateLifetime = true,
+                ClockSkew = TimeSpan.Zero
+            };
+
+            try
+            {
+                var claimsPrincipal = tokenHandler.ValidateToken(accessToken, validationParameters, out SecurityToken validatedToken);
+                JwtSecurityToken? jwtSecurityToken = validatedToken as JwtSecurityToken;
+
+                if (jwtSecurityToken == null)
+                {
+                    throw new Exception("Token validation failed.");
+                }
+
+                // Check for token type
+                string? tokenType = jwtSecurityToken.Claims.FirstOrDefault(c => c.Type == "token_type")?.Value;
+
+                if (string.IsNullOrEmpty(tokenType) || tokenType != "access_token")
+                {
+                    throw new Exception("Invalid or missing token type.");
+                }
+
+                DateTime expirationTime = jwtSecurityToken.ValidTo;
+                return expirationTime - DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Token validation failed: {ex.Message}");
+            }
+        }
+
+        private static async Task<LoginData?> RefreshToken(string refreshToken)
+        {
+            var requestData = new
+            {
+                grant_type = "refresh_token",
+                client_id = ClientId,
+                refresh_token = refreshToken
+            };
+
+            // Serialize the request data to JSON
+            var jsonContent = JsonConvert.SerializeObject(requestData);
+            var httpContent = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+
+            // Make the HTTP POST request
+            var response = await HttpClient.PostAsync(Endpoint + "/oauth/token", httpContent);
+
+            // Ensure the response is successful
+            response.EnsureSuccessStatusCode();
+
+            // Deserialize the response to LoginData
+            LoginData? loginData = JsonConvert.DeserializeObject<LoginData>(await response.Content.ReadAsStringAsync());
+
+            // Read and return the response content
+            return loginData;
         }
     }
 }
